@@ -1,0 +1,1108 @@
+
+package com.statistical.android.sdk;
+
+import android.app.Activity;
+import android.content.Context;
+import android.util.Log;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.util.Calendar;
+import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+public class Statistical {
+
+	/**
+	 * Statistical的版本号 
+	 */
+	public static final String SDK_VERSION_STRING = "1.0";
+	/**
+	 * 默认的APP版本号 
+	 */
+	public static final String DEFAULT_APP_VERSION = "1.0";
+	/**
+	 * 日志的Tag 
+	 */
+	public static final String TAG = "Statistical";
+
+	/**
+	 * 定义提交服务器前本地可以缓存自定义事件的数量。 
+	 */
+	private static final int EVENT_QUEUE_SIZE_THRESHOLD = 10;
+	/**
+	 * 调用onTimer()的时间间隔 
+	 */
+	private static final long TIMER_DELAY_IN_SECONDS = 60;
+
+	protected static List<String> publicKeyPinCertificates;
+
+	/**
+	 * 推送的模式（测试、生产） 
+	 */
+	public static enum CountlyMessagingMode {
+		TEST, PRODUCTION,
+	}
+
+	/**
+	 * 
+	 * 统计的模式（测试、生产）
+	 * 
+	 * @author
+	 * 
+	 */
+	public static enum CountlyMode {
+		TEST, PRODUCTION,
+	}
+
+	private static class SingletonHolder {
+		static final Statistical instance = new Statistical();
+	}
+
+	private ConnectionQueue connectionQueue_;
+	private ScheduledExecutorService timerService_;
+	private EventQueue eventQueue_;
+	private long prevSessionDurationStartTime_;
+	private int activityCount_;
+	private boolean disableUpdateSessionRequests_;
+	private boolean enableLogging_;
+	private Statistical.CountlyMessagingMode messagingMode_;
+	private Context context_;
+
+	public static UserData userData;
+
+	// private String lastView = null;
+	// private int lastViewStart = 0;
+	private boolean firstView = true;
+	private boolean autoViewTracker = false;
+
+	/**
+	 * 
+	 * 单例
+	 */
+	public static Statistical sharedInstance() {
+		return SingletonHolder.instance;
+	}
+
+	/**
+	 * Constructs a Countly object. Creates a new ConnectionQueue and
+	 * initializes the session timer.
+	 */
+	Statistical() {
+		connectionQueue_ = new ConnectionQueue();
+		Statistical.userData = new UserData(connectionQueue_);
+		timerService_ = Executors.newSingleThreadScheduledExecutor();
+		timerService_.scheduleWithFixedDelay(new Runnable() {
+			@Override
+			public void run() {
+				onTimer();
+			}
+		}, TIMER_DELAY_IN_SECONDS, TIMER_DELAY_IN_SECONDS, TimeUnit.SECONDS);
+	}
+
+	/**
+	 * 初始化Countly SDK . 在Activity的onCreate()中调用。如果没有OpenUDID，也没有Advertising
+	 * ID,Countly会忽略这个用户。 Initializes the Countly SDK. Call from your main
+	 * Activity's onCreate() method. Must be called before other SDK methods can
+	 * be used. Device ID is supplied by OpenUDID service if available,
+	 * otherwise Advertising ID is used. BE CAUTIOUS!!!! If neither OpenUDID,
+	 * nor Advertising ID is available, Countly will ignore this user.
+	 * 
+	 * @param context
+	 *            application context
+	 * @param serverURL
+	 *            URL of the Countly server to submit data to; use
+	 *            "https://cloud.count.ly" for Countly Cloud
+	 * @param appKey
+	 *            app key for the application being tracked; find in the Countly
+	 *            Dashboard under Management &gt; Applications
+	 * @return Countly instance for easy method chaining
+	 * @throws java.lang.IllegalArgumentException
+	 *             if context, serverURL, appKey, or deviceID are invalid
+	 * @throws java.lang.IllegalStateException
+	 *             if the Countly SDK has already been initialized
+	 */
+	public Statistical init(final Context context, final String serverURL, final String appKey, Statistical.CountlyMode mode) {
+		return init(context, serverURL, appKey, null, OpenUDIDAdapter.isOpenUDIDAvailable() ? DeviceId.Type.OPEN_UDID : DeviceId.Type.ADVERTISING_ID, mode);
+	}
+
+	/**
+	 * 初始化Countly SDK . 在Activity的onCreate()中调用。 Initializes the Countly SDK.
+	 * Call from your main Activity's onCreate() method. Must be called before
+	 * other SDK methods can be used.
+	 * 
+	 * @param context
+	 *            application context
+	 * @param serverURL
+	 *            URL of the Countly server to submit data to; use
+	 *            "https://cloud.count.ly" for Countly Cloud
+	 * @param appKey
+	 *            app key for the application being tracked; find in the Countly
+	 *            Dashboard under Management &gt; Applications
+	 * @param deviceID
+	 *            unique ID for the device the app is running on; note that null
+	 *            in deviceID means that Countly will fall back to OpenUDID,
+	 *            then, if it's not available, to Google Advertising ID
+	 * @return Countly instance for easy method chaining
+	 * @throws IllegalArgumentException
+	 *             if context, serverURL, appKey, or deviceID are invalid
+	 * @throws IllegalStateException
+	 *             if init has previously been called with different values
+	 *             during the same application instance
+	 */
+	public Statistical init(final Context context, final String serverURL, final String appKey, final String deviceID, Statistical.CountlyMode mode) {
+		return init(context, serverURL, appKey, deviceID, null, mode);
+	}
+
+	/**
+	 * 初始化Countly SDK . 在Activity的onCreate()中调用。 Initializes the Countly SDK.
+	 * Call from your main Activity's onCreate() method. Must be called before
+	 * other SDK methods can be used.
+	 * 
+	 * @param context
+	 *            application context
+	 * @param serverURL
+	 *            URL of the Countly server to submit data to; use
+	 *            "https://cloud.count.ly" for Countly Cloud
+	 * @param appKey
+	 *            app key for the application being tracked; find in the Countly
+	 *            Dashboard under Management &gt; Applications
+	 * @param deviceID
+	 *            unique ID for the device the app is running on; note that null
+	 *            in deviceID means that Countly will fall back to OpenUDID,
+	 *            then, if it's not available, to Google Advertising ID
+	 * @param idMode
+	 *            enum value specifying which device ID generation strategy
+	 *            Countly should use: OpenUDID or Google Advertising ID
+	 * @return Countly instance for easy method chaining
+	 * @throws IllegalArgumentException
+	 *             if context, serverURL, appKey, or deviceID are invalid
+	 * @throws IllegalStateException
+	 *             if init has previously been called with different values
+	 *             during the same application instance
+	 */
+	public synchronized Statistical init(final Context context, final String serverURL, final String appKey, final String deviceID, DeviceId.Type idMode, Statistical.CountlyMode mode) {
+		if (context == null) {
+			throw new IllegalArgumentException("valid context is required");
+		}
+		if (!isValidURL(serverURL)) {
+			throw new IllegalArgumentException("valid serverURL is required");
+		}
+		if (appKey == null || appKey.length() == 0) {
+			throw new IllegalArgumentException("valid appKey is required");
+		}
+		if (deviceID != null && deviceID.length() == 0) {
+			throw new IllegalArgumentException("valid deviceID is required");
+		}
+		if (deviceID == null && idMode == null) {
+			if (OpenUDIDAdapter.isOpenUDIDAvailable())
+				idMode = DeviceId.Type.OPEN_UDID;
+			else if (AdvertisingIdAdapter.isAdvertisingIdAvailable())
+				idMode = DeviceId.Type.ADVERTISING_ID;
+		}
+		if (deviceID == null && idMode == DeviceId.Type.OPEN_UDID && !OpenUDIDAdapter.isOpenUDIDAvailable()) {
+			throw new IllegalArgumentException("valid deviceID is required because OpenUDID is not available");
+		}
+		if (deviceID == null && idMode == DeviceId.Type.ADVERTISING_ID && !AdvertisingIdAdapter.isAdvertisingIdAvailable()) {
+			throw new IllegalArgumentException("valid deviceID is required because Advertising ID is not available (you need to include Google Play services 4.0+ into your project)");
+		}
+		if (eventQueue_ != null && (!connectionQueue_.getServerURL().equals(serverURL) || !connectionQueue_.getAppKey().equals(appKey) || !DeviceId.deviceIDEqualsNullSafe(deviceID, idMode, connectionQueue_.getDeviceId()))) {
+			throw new IllegalStateException("Countly cannot be reinitialized with different values");
+		}
+
+		// In some cases CountlyMessaging does some background processing, so it
+		// needs a way
+		// to start Countly on itself
+		if (MessagingAdapter.isMessagingAvailable()) {
+			MessagingAdapter.storeConfiguration(context, serverURL, appKey, deviceID, idMode);
+		}
+
+		// if we get here and eventQueue_ != null, init is being called again
+		// with the same values,
+		// so there is nothing to do, because we are already initialized with
+		// those values
+		if (eventQueue_ == null) {
+			DeviceId deviceIdInstance;
+			if (deviceID != null) {
+				deviceIdInstance = new DeviceId(deviceID);
+			} else {
+				deviceIdInstance = new DeviceId(idMode);
+			}
+
+			final StatisticalStore countlyStore = new StatisticalStore(context);
+
+			deviceIdInstance.init(context, countlyStore, true);
+
+			connectionQueue_.setServerURL(serverURL);
+			connectionQueue_.setAppKey(appKey);
+			connectionQueue_.setCountlyStore(countlyStore);
+			connectionQueue_.setDeviceId(deviceIdInstance);
+
+			eventQueue_ = new EventQueue(countlyStore);
+		}
+		context_ = context;
+		// context is allowed to be changed on the second init call
+		connectionQueue_.setContext(context);
+		connectionQueue_.setMode(mode);
+
+		return this;
+	}
+
+	/**
+	 * Countly是否已初始化
+	 * 
+	 * 
+	 */
+	public synchronized boolean isInitialized() {
+		return eventQueue_ != null;
+	}
+
+	/**
+	 * 初始化推送SDK，在Activity的onCreate()中调用。 
+	 * @param activity
+	 *            application activity which acts as a final destination for
+	 *            notifications
+	 * @param activityClass
+	 *            application activity class which acts as a final destination
+	 *            for notifications
+	 * @param projectID
+	 *            ProjectID for this app from Google API Console
+	 * @param mode
+	 *            whether this app installation is a test release or production
+	 * @return Countly instance for easy method chaining
+	 * @throws IllegalStateException
+	 *             if no CountlyMessaging class is found (you need to use
+	 *             countly-messaging-sdk-android library instead of
+	 *             countly-sdk-android)
+	 */
+	public Statistical initMessaging(Activity activity, Class<? extends Activity> activityClass, String projectID, Statistical.CountlyMessagingMode mode) {
+		return initMessaging(activity, activityClass, projectID, null, mode);
+	}
+
+	/**
+	 * 初始化推送SDK，在Activity的onCreate()中调用。 
+	 * 
+	 * @param activity
+	 *            application activity which acts as a final destination for
+	 *            notifications
+	 * @param activityClass
+	 *            application activity class which acts as a final destination
+	 *            for notifications
+	 * @param projectID
+	 *            ProjectID for this app from Google API Console
+	 * @param buttonNames
+	 *            Strings to use when displaying Dialogs (uses new
+	 *            String[]{"Open", "Review"} by default)
+	 * @param mode
+	 *            whether this app installation is a test release or production
+	 * @return Countly instance for easy method chaining
+	 * @throws IllegalStateException
+	 *             if no CountlyMessaging class is found (you need to use
+	 *             countly-messaging-sdk-android library instead of
+	 *             countly-sdk-android)
+	 */
+	public synchronized Statistical initMessaging(Activity activity, Class<? extends Activity> activityClass, String projectID, String[] buttonNames, Statistical.CountlyMessagingMode mode) {
+		if (mode != null && !MessagingAdapter.isMessagingAvailable()) {
+			throw new IllegalStateException("you need to include countly-messaging-sdk-android library instead of countly-sdk-android if you want to use Countly Messaging");
+		} else {
+			messagingMode_ = mode;
+			if (!MessagingAdapter.init(activity, activityClass, projectID, buttonNames)) {
+				throw new IllegalStateException("couldn't initialize Countly Messaging");
+			}
+		}
+
+		if (MessagingAdapter.isMessagingAvailable()) {
+			MessagingAdapter.storeConfiguration(connectionQueue_.getContext(), connectionQueue_.getServerURL(), connectionQueue_.getAppKey(), connectionQueue_.getDeviceId().getId(), connectionQueue_.getDeviceId().getType());
+		}
+
+		return this;
+	}
+
+	/**
+	 * 立即关闭会话、事件跟踪。清除所有储存会话、事件数据。 I
+	 */
+	public synchronized void halt() {
+		eventQueue_ = null;
+		final StatisticalStore countlyStore = connectionQueue_.getCountlyStore();
+		if (countlyStore != null) {
+			countlyStore.clear();
+		}
+		connectionQueue_.setContext(null);
+		connectionQueue_.setServerURL(null);
+		connectionQueue_.setAppKey(null);
+		connectionQueue_.setCountlyStore(null);
+		prevSessionDurationStartTime_ = 0;
+		activityCount_ = 0;
+	}
+
+	/**
+	 * 通知Countly SDK Activity已启动，必须在应用的每个Activity的onStart()中调用
+	 * 
+	 * @throws IllegalStateException
+	 *             if Countly SDK has not been initialized
+	 */
+	public synchronized void onStart(Activity activity) {
+		if (eventQueue_ == null) {
+			throw new IllegalStateException("init must be called before onStart");
+		}
+
+		++activityCount_;
+		if (activityCount_ == 1) {
+			onStartHelper();
+		}
+
+		// check if there is an install referrer data
+		String referrer = ReferrerReceiver.getReferrer(context_);
+		if (Statistical.sharedInstance().isLoggingEnabled()) {
+			Log.d(Statistical.TAG, "Checking referrer: " + referrer);
+		}
+		if (referrer != null) {
+			connectionQueue_.sendReferrerData(referrer);
+			ReferrerReceiver.deleteReferrer(context_);
+		}
+
+		CrashDetails.inForeground();
+
+		if (autoViewTracker) {
+			recordView(activity.getClass().getName());
+			// recordActivity(activity.getClass().getName());
+		}
+	}
+
+	/**
+	 * 在View开始的生命周期中调用
+	 * 
+	 * @param viewName
+	 */
+	public synchronized void onStart(String viewName) {
+		if (eventQueue_ == null) {
+			throw new IllegalStateException("init must be called before onStart");
+		}
+		if (autoViewTracker) {
+			recordView(viewName);
+		}
+	}
+
+	/**
+	 */
+	void onStartHelper() {
+		prevSessionDurationStartTime_ = System.nanoTime();
+		StatisticalStore countlyStore = connectionQueue_.getCountlyStore();
+		if (countlyStore != null) {
+			countlyStore.setBeginSession(Statistical.currentTimestamp());
+		}
+		connectionQueue_.beginSession();
+
+	}
+
+	/**
+	 * 通知Countly SDK Activity已停止。必须在每个Activity的onStop()中调用 T
+	 * @throws IllegalStateException
+	 *             if Countly SDK has not been initialized, or if unbalanced
+	 *             calls to onStart/onStop are detected
+	 */
+	public synchronized void onStop(Activity activity) {
+		if (eventQueue_ == null) {
+			throw new IllegalStateException("init must be called before onStop");
+		}
+		if (activityCount_ == 0) {
+			throw new IllegalStateException("must call onStart before onStop");
+		}
+
+		--activityCount_;
+		reportViewDuration(activity.getClass().getName());
+		if (activityCount_ == 0) {
+			onStopHelper();
+		}
+
+		CrashDetails.inBackground();
+
+		// report current view duration
+		// reportActDuration();
+		
+	}
+
+	/**
+	 * 在view结束的生命周期中调用
+	 * 
+	 * @param viewName
+	 */
+	public synchronized void onStop(String viewName) {
+		if (eventQueue_ == null) {
+			throw new IllegalStateException("init must be called before onStop");
+		}
+		reportViewDuration(viewName);
+	}
+
+	/**
+	 * 在最后一个Activity退出时调用，向server发送结束事件并发送自定义事件。 
+	 */
+	void onStopHelper() {
+		connectionQueue_.endSession(roundedSecondsSinceLastSessionDurationUpdate());
+		prevSessionDurationStartTime_ = 0;
+
+		if (eventQueue_.size() > 0) {
+			connectionQueue_.recordEvents(eventQueue_.events());
+		}
+	}
+
+	/**
+	 * 当GCM注册ID成功时调用，向server发送token（推送使用） .
+	 */
+	public void onRegistrationId(String registrationId) {
+		connectionQueue_.tokenSession(registrationId, messagingMode_);
+	}
+
+	/**
+	 * 记录无细分值的自定义事件。传入自定义事件的名称。 
+	 * 
+	 * @param key
+	 *            name of the custom event, required, must not be the empty
+	 *            string
+	 * @throws IllegalStateException
+	 *             if Countly SDK has not been initialized
+	 * @throws IllegalArgumentException
+	 *             if key is null or empty
+	 */
+	public void recordEvent(final String key) {
+		recordEvent(key, null, 1, 0);
+	}
+
+	/**
+	 * 记录无细分值的自定义事件。传入自定义事件的名称和数量（大于0）。
+	 * 
+	 * @param key
+	 *            name of the custom event, required, must not be the empty
+	 *            string
+	 * @param count
+	 *            count to associate with the event, should be more than zero
+	 * @throws IllegalStateException
+	 *             if Countly SDK has not been initialized
+	 * @throws IllegalArgumentException
+	 *             if key is null or empty
+	 */
+	public void recordEvent(final String key, final int count) {
+		recordEvent(key, null, count, 0);
+	}
+
+	/**
+	 * 记录无细分值的自定义事件。传入自定义事件的名、数量（大于0）、总和。
+	 * @param key
+	 *            name of the custom event, required, must not be the empty
+	 *            string
+	 * @param count
+	 *            count to associate with the event, should be more than zero
+	 * @param sum
+	 *            sum to associate with the event
+	 * @throws IllegalStateException
+	 *             if Countly SDK has not been initialized
+	 * @throws IllegalArgumentException
+	 *             if key is null or empty
+	 */
+	public void recordEvent(final String key, final int count, final double sum) {
+		recordEvent(key, null, count, sum);
+	}
+
+	/**
+	 * 记录一个指定细分值的自定义事件。传入自定义事件的名称、细分值字典（可为空）、数量（大于0）。
+	 * 
+	 * @param key
+	 *            name of the custom event, required, must not be the empty
+	 *            string
+	 * @param segmentation
+	 *            segmentation dictionary to associate with the event, can be
+	 *            null
+	 * @param count
+	 *            count to associate with the event, should be more than zero
+	 * @throws IllegalStateException
+	 *             if Countly SDK has not been initialized
+	 * @throws IllegalArgumentException
+	 *             if key is null or empty
+	 */
+	public void recordEvent(final String key, final Map<String, String> segmentation, final int count) {
+		recordEvent(key, segmentation, count, 0);
+	}
+
+	/**
+	 * 记录一个指定细分值的自定义事件。传入自定义事件的名称、细分值字典（可为空）、数量（大于0）、总和。
+	 * 如果EventQueue中缓存事件的数量大于了可储存的最大值，则发送事件到server 
+	 * 
+	 * @param key
+	 *            name of the custom event, required, must not be the empty
+	 *            string
+	 * @param segmentation
+	 *            segmentation dictionary to associate with the event, can be
+	 *            null
+	 * @param count
+	 *            count to associate with the event, should be more than zero
+	 * @param sum
+	 *            sum to associate with the event
+	 * @throws IllegalStateException
+	 *             if Countly SDK has not been initialized
+	 * @throws IllegalArgumentException
+	 *             if key is null or empty, count is less than 1, or if
+	 *             segmentation contains null or empty keys or values
+	 */
+	public synchronized void recordEvent(final String key, final Map<String, String> segmentation, final int count, final double sum) {
+		if (!isInitialized()) {
+			throw new IllegalStateException("Countly.sharedInstance().init must be called before recordEvent");
+		}
+		if (key == null || key.length() == 0) {
+			throw new IllegalArgumentException("Valid Countly event key is required");
+		}
+		if (count < 1) {
+			throw new IllegalArgumentException("Countly event count should be greater than zero");
+		}
+		if (segmentation != null) {
+			for (String k : segmentation.keySet()) {
+				if (k == null || k.length() == 0) {
+					throw new IllegalArgumentException("Countly event segmentation key cannot be null or empty");
+				}
+				if (segmentation.get(k) == null || segmentation.get(k).length() == 0) {
+					throw new IllegalArgumentException("Countly event segmentation value cannot be null or empty");
+				}
+			}
+		}
+
+		eventQueue_.recordEvent(key, segmentation, count, sum);
+		sendEventsIfNeeded();
+	}
+
+	/**
+	 * 设置是否自动跟踪视图 Enable or disable automatic view tracking
+	 * 
+	 * @param enable
+	 *            boolean for the state of automatic view tracking
+	 */
+	public synchronized Statistical setViewTracking(boolean enable) {
+		autoViewTracker = enable;
+		return this;
+	}
+
+	/**
+	 * 获取是否自动跟踪试图的状态 Check state of automatic view tracking
+	 * 
+	 * @return boolean - true if enabled, false if disabled
+	 */
+	public synchronized boolean isViewTrackingEnabled() {
+		return autoViewTracker;
+	}
+
+	/**
+	 * 跟踪Activity视图。 Record a view manualy, without automatic tracking or track
+	 * view that is not automatically tracked like fragment, Message box or
+	 * transparent Activity
+	 * 
+	 * @param viewName
+	 *            String - name of the view
+	 */
+	// public synchronized Countly recordActivity(String viewName) {
+	// reportActDuration();
+	// lastView = viewName;
+	// lastViewStart = Countly.currentTimestamp();
+	// HashMap<String, String> segments = new HashMap<String, String>();
+	// segments.put("name", viewName);
+	// segments.put("visit", "1");
+	// segments.put("segment", "Android");
+	// if (firstView) {
+	// firstView = false;
+	// segments.put("start", "1");
+	// }
+	// recordEvent(viewName, segments, 1);
+	// return this;
+	// }
+
+	/**
+	 * 跟踪视图
+	 * 
+	 * @param viewName
+	 *            名称
+	 * @return
+	 */
+	public synchronized Statistical recordView(String viewName) {
+		reportViewDuration(viewName);
+		int startTime = Statistical.currentTimestamp();
+		StatisticalStore countlyStore = connectionQueue_.getCountlyStore();
+		if (countlyStore != null) {
+			countlyStore.setViewStart(viewName, startTime);
+		} 
+		HashMap<String, String> segments = new HashMap<String, String>();
+		segments.put("name", viewName);
+		segments.put("visit", "1");
+		segments.put("segment", "Android");
+		if (firstView) {
+			firstView = false;
+			segments.put("start", "1");
+		}
+		recordEvent(viewName, segments, 1);
+		return this;
+	}
+
+	/**
+	 * 设置用户信息 Sets information about user. Possible keys are:
+	 * <ul>
+	 * <li>
+	 * name - (String) providing user's full name</li>
+	 * <li>
+	 * username - (String) providing user's nickname</li>
+	 * <li>
+	 * email - (String) providing user's email address</li>
+	 * <li>
+	 * organization - (String) providing user's organization's name where user
+	 * works</li>
+	 * <li>
+	 * phone - (String) providing user's phone number</li>
+	 * <li>
+	 * picture - (String) providing WWW URL to user's avatar or profile picture</li>
+	 * <li>
+	 * picturePath - (String) providing local path to user's avatar or profile
+	 * picture</li>
+	 * <li>
+	 * gender - (String) providing user's gender as M for male and F for female</li>
+	 * <li>
+	 * byear - (int) providing user's year of birth as integer</li>
+	 * </ul>
+	 * 
+	 * @param data
+	 *            Map&lt;String, String&gt; with user data
+	 * @deprecated use {@link #Countly()
+	 *             .sharedInstance().userData.setUserData(Map<String, String>)}
+	 *             to set data and {@link #Countly()
+	 *             .sharedInstance().userData.save()} to send it to server.
+	 */
+	public synchronized Statistical setUserData(Map<String, String> data) {
+		return setUserData(data, null);
+	}
+
+	/**
+	 * 设置用户的自定义信息 Sets information about user with custom properties. In custom
+	 * properties you can provide any string key values to be stored with user
+	 * Possible keys are:
+	 * <ul>
+	 * <li>
+	 * name - (String) providing user's full name</li>
+	 * <li>
+	 * username - (String) providing user's nickname</li>
+	 * <li>
+	 * email - (String) providing user's email address</li>
+	 * <li>
+	 * organization - (String) providing user's organization's name where user
+	 * works</li>
+	 * <li>
+	 * phone - (String) providing user's phone number</li>
+	 * <li>
+	 * picture - (String) providing WWW URL to user's avatar or profile picture</li>
+	 * <li>
+	 * picturePath - (String) providing local path to user's avatar or profile
+	 * picture</li>
+	 * <li>
+	 * gender - (String) providing user's gender as M for male and F for female</li>
+	 * <li>
+	 * byear - (int) providing user's year of birth as integer</li>
+	 * </ul>
+	 * 
+	 * @param data
+	 *            Map&lt;String, String&gt; with user data
+	 * @param customdata
+	 *            Map&lt;String, String&gt; with custom key values for this user
+	 * @deprecated use {@link #Countly()
+	 *             .sharedInstance().userData.setUserData(Map<String, String>,
+	 *             Map<String, String>)} to set data and {@link #Countly()
+	 *             .sharedInstance().userData.save()} to send it to server.
+	 */
+	public synchronized Statistical setUserData(Map<String, String> data, Map<String, String> customdata) {
+		UserData.setData(data);
+		if (customdata != null)
+			UserData.setCustomData(customdata);
+		connectionQueue_.sendUserData();
+		UserData.clear();
+		return this;
+	}
+
+	/**
+	 * 设置自定义属性 Sets custom properties. In custom properties you can provide any
+	 * string key values to be stored with user
+	 * 
+	 * @param customdata
+	 *            Map&lt;String, String&gt; with custom key values for this user
+	 * @deprecated use {@link #Countly()
+	 *             .sharedInstance().userData.setCustomUserData(Map<String,
+	 *             String>)} to set data and {@link #Countly()
+	 *             .sharedInstance().userData.save()} to send it to server.
+	 */
+	public synchronized Statistical setCustomUserData(Map<String, String> customdata) {
+		if (customdata != null)
+			UserData.setCustomData(customdata);
+		connectionQueue_.sendUserData();
+		UserData.clear();
+		return this;
+	}
+
+	/**
+	 * 设置位置信息 Set user location.
+	 * 
+	 * Countly detects user location based on IP address. But for
+	 * geolocation-enabled apps, it's better to supply exact location of user.
+	 * Allows sending messages to a custom segment of users located in a
+	 * particular area.
+	 * 
+	 * @param lat
+	 *            Latitude
+	 * @param lon
+	 *            Longitude
+	 */
+	public synchronized Statistical setLocation(double lat, double lon) {
+		connectionQueue_.getCountlyStore().setLocation(lat, lon);
+
+		if (disableUpdateSessionRequests_) {
+			connectionQueue_.updateSession(roundedSecondsSinceLastSessionDurationUpdate());
+		}
+
+		return this;
+	}
+
+	/**
+	 * 设置自定义崩溃日志 Sets custom segments to be reported with crash reports In
+	 * custom segments you can provide any string key values to segments crashes
+	 * by
+	 * 
+	 * @param segments
+	 *            Map&lt;String, String&gt; key segments and their values
+	 */
+	public synchronized Statistical setCustomCrashSegments(Map<String, String> segments) {
+		if (segments != null)
+			CrashDetails.setCustomSegments(segments);
+		return this;
+	}
+
+	/**
+	 * 添加崩溃日志 Add crash breadcrumb like log record to the log that will be send
+	 * together with crash report
+	 * 
+	 * @param record
+	 *            String a bread crumb for the crash report
+	 */
+	public synchronized Statistical addCrashLog(String record) {
+		CrashDetails.addLog(record);
+		return this;
+	}
+
+	/**
+	 * 发送非致命异常日志到server Log handled exception to report it to server as non
+	 * fatal crash
+	 * 
+	 * @param exception
+	 *            Exception to log
+	 */
+	public synchronized Statistical logException(Exception exception) {
+		StringWriter sw = new StringWriter();
+		PrintWriter pw = new PrintWriter(sw);
+		exception.printStackTrace(pw);
+		connectionQueue_.sendCrashReport(sw.toString(), true);
+		return this;
+	}
+
+	/**
+	 * 设置发送未捕获的crash报告到server Enable crash reporting to send unhandled crash
+	 * reports to server
+	 */
+	public synchronized Statistical enableCrashReporting() {
+		// get default handler
+		final Thread.UncaughtExceptionHandler oldHandler = Thread.getDefaultUncaughtExceptionHandler();
+
+		Thread.UncaughtExceptionHandler handler = new Thread.UncaughtExceptionHandler() {
+
+			@Override
+			public void uncaughtException(Thread t, Throwable e) {
+				StringWriter sw = new StringWriter();
+				PrintWriter pw = new PrintWriter(sw);
+				e.printStackTrace(pw);
+				Statistical.sharedInstance().connectionQueue_.sendCrashReport(sw.toString(), false);
+
+				// if there was another handler before
+				if (oldHandler != null) {
+					// notify it also
+					oldHandler.uncaughtException(t, e);
+				}
+			}
+		};
+
+		Thread.setDefaultUncaughtExceptionHandler(handler);
+		return this;
+	}
+
+	/**
+	 * 禁用定时更新。Countly将发送一个请求到服务器每30秒包含会话持续时间小更新。这种方法可以禁止这种行为。请注意，事件更新仍然会记录事件后，
+	 * 每10个事件或30秒发送 Disable periodic session time updates. By default, Countly
+	 * will send a request to the server each 30 seconds with a small update
+	 * containing session duration time. This method allows you to disable such
+	 * behavior. Note that event updates will still be sent every 10 events or
+	 * 30 seconds after event recording.
+	 * 
+	 * @param disable
+	 *            whether or not to disable session time updates
+	 * @return Countly instance for easy method chaining
+	 */
+	public synchronized Statistical setDisableUpdateSessionRequests(final boolean disable) {
+		disableUpdateSessionRequests_ = disable;
+		return this;
+	}
+
+	/**
+	 * 设置调试日志记录是否已开启或关闭。日志默认情况下禁用 Sets whether debug logging is turned on or
+	 * off. Logging is disabled by default.
+	 * 
+	 * @param enableLogging
+	 *            true to enable logging, false to disable logging
+	 * @return Countly instance for easy method chaining
+	 */
+	public synchronized Statistical setLoggingEnabled(final boolean enableLogging) {
+		enableLogging_ = enableLogging;
+		return this;
+	}
+
+	public synchronized boolean isLoggingEnabled() {
+		return enableLogging_;
+	}
+
+	/**
+	 * 记录Activity持续的时间 Reports duration of last view
+	 */
+	// void reportActDuration() {
+	// if (lastView != null) {
+	// HashMap<String, String> segments = new HashMap<String, String>();
+	// segments.put("name", lastView);
+	// segments.put("dur", String.valueOf(Countly.currentTimestamp() -
+	// lastViewStart));
+	// segments.put("segment", "Android");
+	// // recordEvent("[CLY]_view",segments,1);
+	// recordEvent(lastView, segments, 1);
+	// lastView = null;
+	// lastViewStart = 0;
+	// }
+	// }
+
+	/**
+	 * 记录视图时长
+	 * 
+	 * @param viewName
+	 */
+	void reportViewDuration(String viewName) {
+		StatisticalStore countlyStore = connectionQueue_.getCountlyStore();
+		if (countlyStore != null) {
+			int viewStartTime = countlyStore.getViewStart(viewName);
+			if (viewStartTime != -1) {
+				HashMap<String, String> segments = new HashMap<String, String>();
+				segments.put("name", viewName);
+				segments.put("dur", String.valueOf(Statistical.currentTimestamp() - viewStartTime));
+				segments.put("segment", "Android");
+				recordEvent(viewName, segments, 1);
+				countlyStore.setViewStart(viewName, -1);
+			}
+		}
+
+	}
+
+	/**
+	 * 如果有超过10个，提交的所有本地排队事件到服务器 Submits all of the locally queued events to the
+	 * server if there are more than 10 of them.
+	 */
+	void sendEventsIfNeeded() {
+		if (eventQueue_.size() >= EVENT_QUEUE_SIZE_THRESHOLD) {
+			connectionQueue_.recordEvents(eventQueue_.events());
+		}
+	}
+
+	/**
+	 * 每60秒叫向服务器发送一次心跳。如果没有一个活动的应用程序会话则不做任何操作 Called every 60 seconds to send a
+	 * session heartbeat to the server. Does nothing if there is not an active
+	 * application session.
+	 */
+	synchronized void onTimer() {
+		final boolean hasActiveSession = activityCount_ > 0;
+		if (hasActiveSession) {
+			if (!disableUpdateSessionRequests_) {
+				connectionQueue_.updateSession(roundedSecondsSinceLastSessionDurationUpdate());
+			}
+			if (eventQueue_.size() > 0) {
+				connectionQueue_.recordEvents(eventQueue_.events());
+			}
+		}
+	}
+
+	/**
+	 * Calculates the unsent session duration in seconds, rounded to the nearest
+	 * int.
+	 */
+	int roundedSecondsSinceLastSessionDurationUpdate() {
+		final long currentTimestampInNanoseconds = System.nanoTime();
+		final long unsentSessionLengthInNanoseconds = currentTimestampInNanoseconds - prevSessionDurationStartTime_;
+		prevSessionDurationStartTime_ = currentTimestampInNanoseconds;
+		return (int) Math.round(unsentSessionLengthInNanoseconds / 1000000000.0d);
+	}
+
+	/**
+	 * 当前时间戳 Utility method to return a current timestamp that can be used in
+	 * the Count.ly API.
+	 */
+	static int currentTimestamp() {
+		return ((int) (System.currentTimeMillis() / 1000l));
+	}
+
+	/**
+	 * 当前小时 Utility method to return a current hour of the day that can be used
+	 * in the Count.ly API.
+	 */
+	static int currentHour() {
+		return Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+	}
+
+	/**
+	 * 当前星期 Utility method to return a current day of the week that can be used
+	 * in the Count.ly API.
+	 */
+	static int currentDayOfWeek() {
+		int day = Calendar.getInstance().get(Calendar.DAY_OF_WEEK);
+		switch (day) {
+		case Calendar.MONDAY:
+			return 1;
+		case Calendar.TUESDAY:
+			return 2;
+		case Calendar.WEDNESDAY:
+			return 3;
+		case Calendar.THURSDAY:
+			return 4;
+		case Calendar.FRIDAY:
+			return 5;
+		case Calendar.SATURDAY:
+			return 6;
+		}
+		return 0;
+	}
+
+	/**
+	 * 测试URL是否是通的 Utility method for testing validity of a URL.
+	 */
+	static boolean isValidURL(final String urlStr) {
+		boolean validURL = false;
+		if (urlStr != null && urlStr.length() > 0) {
+			try {
+				new URL(urlStr);
+				validURL = true;
+			} catch (MalformedURLException e) {
+				validURL = false;
+			}
+		}
+		return validURL;
+	}
+
+	/**
+	 * Allows public key pinning. Supply list of SSL certificates
+	 * (base64-encoded strings between "-----BEGIN CERTIFICATE-----" and
+	 * "-----END CERTIFICATE-----" without end-of-line) along with server URL
+	 * starting with "https://". Countly will only accept connections to the
+	 * server if public key of SSL certificate provided by the server matches
+	 * one provided to this method.
+	 * 
+	 * @param certificates
+	 *            List of SSL certificates
+	 * @return Countly instance
+	 */
+	public static Statistical enablePublicKeyPinning(List<String> certificates) {
+		publicKeyPinCertificates = certificates;
+		return Statistical.sharedInstance();
+	}
+
+	// for unit testing
+	ConnectionQueue getConnectionQueue() {
+		return connectionQueue_;
+	}
+
+	void setConnectionQueue(final ConnectionQueue connectionQueue) {
+		connectionQueue_ = connectionQueue;
+	}
+
+	ExecutorService getTimerService() {
+		return timerService_;
+	}
+
+	EventQueue getEventQueue() {
+		return eventQueue_;
+	}
+
+	void setEventQueue(final EventQueue eventQueue) {
+		eventQueue_ = eventQueue;
+	}
+
+	long getPrevSessionDurationStartTime() {
+		return prevSessionDurationStartTime_;
+	}
+
+	void setPrevSessionDurationStartTime(final long prevSessionDurationStartTime) {
+		prevSessionDurationStartTime_ = prevSessionDurationStartTime;
+	}
+
+	int getActivityCount() {
+		return activityCount_;
+	}
+
+	synchronized boolean getDisableUpdateSessionRequests() {
+		return disableUpdateSessionRequests_;
+	}
+
+	public void stackOverflow() {
+		this.stackOverflow();
+	}
+
+	// public synchronized Countly crashTest(int crashNumber) {
+	//
+	// if (crashNumber == 1){
+	// if (Countly.sharedInstance().isLoggingEnabled()) {
+	// Log.d(Countly.TAG, "Running crashTest 1");
+	// }
+	//
+	// stackOverflow();
+	//
+	// }else if (crashNumber == 2){
+	//
+	// if (Countly.sharedInstance().isLoggingEnabled()) {
+	// Log.d(Countly.TAG, "Running crashTest 2");
+	// }
+	//
+	// int test = 10/0;
+	//
+	// }else if (crashNumber == 3){
+	//
+	// if (Countly.sharedInstance().isLoggingEnabled()) {
+	// Log.d(Countly.TAG, "Running crashTest 3");
+	// }
+	//
+	// Object[] o = null;
+	// while (true) { o = new Object[] { o }; }
+	//
+	//
+	// }else if (crashNumber == 4){
+	//
+	// if (Countly.sharedInstance().isLoggingEnabled()) {
+	// Log.d(Countly.TAG, "Running crashTest 4");
+	// }
+	//
+	// throw new RuntimeException("This is a crash");
+	// }
+	// else{
+	// if (Countly.sharedInstance().isLoggingEnabled()) {
+	// Log.d(Countly.TAG, "Running crashTest 5");
+	// }
+	//
+	// String test = null;
+	// test.charAt(1);
+	// }
+	// return Countly.sharedInstance();
+	// }
+}

@@ -1,0 +1,295 @@
+
+package com.statistical.android.sdk;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import org.json.JSONException;
+import org.json.JSONObject;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 本地事件、连接队列 持久层
+ * 
+ */
+public class StatisticalStore {
+    private static final String PREFERENCES = "COUNTLY_STORE";
+    private static final String DELIMITER = ":::";
+    private static final String CONNECTIONS_PREFERENCE = "CONNECTIONS";
+    private static final String EVENTS_PREFERENCE = "EVENTS";
+    private static final String LOCATION_PREFERENCE = "LOCATION";
+    private static final String SESSION_PREFERENCE = "SESSION";
+    private static final String VIEW_START_PREFERENCE = "VIEW_START_";
+    private final SharedPreferences preferences_;
+
+    /**
+     * Constructs a CountlyStore object.
+     * @param context used to retrieve storage meta data, must not be null.
+     * @throws IllegalArgumentException if context is null
+     */
+    StatisticalStore(final Context context) {
+        if (context == null) {
+            throw new IllegalArgumentException("must provide valid context");
+        }
+        preferences_ = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
+    }
+
+    /**
+     * Returns an unsorted array of the current stored connections.
+     */
+    public String[] connections() {
+        final String joinedConnStr = preferences_.getString(CONNECTIONS_PREFERENCE, "");
+        return joinedConnStr.length() == 0 ? new String[0] : joinedConnStr.split(DELIMITER);
+    }
+
+    /**
+     * 返回当前存储的事件JSON字符串的未排序的数组。
+     * Returns an unsorted array of the current stored event JSON strings.
+     */
+    public String[] events() {
+        final String joinedEventsStr = preferences_.getString(EVENTS_PREFERENCE, "");
+        return joinedEventsStr.length() == 0 ? new String[0] : joinedEventsStr.split(DELIMITER);
+    }
+
+    /**
+     * 返回当前存储的事件，通过时间戳进行排序，从最旧到最新的列表。
+     * Returns a list of the current stored events, sorted by timestamp from oldest to newest.
+     */
+    public List<Event> eventsList() {
+        final String[] array = events();
+        final List<Event> events = new ArrayList<>(array.length);
+        for (String s : array) {
+            try {
+                final Event event = Event.fromJSON(new JSONObject(s));
+                if (event != null) {
+                    events.add(event);
+                }
+            } catch (JSONException ignored) {
+                // should not happen since JSONObject is being constructed from previously stringified JSONObject
+                // events -> json objects -> json strings -> storage -> json strings -> here
+            }
+        }
+        // order the events from least to most recent
+        Collections.sort(events, new Comparator<Event>() {
+            @Override
+            public int compare(final Event e1, final Event e2) {
+                return e1.timestamp - e2.timestamp;
+            }
+        });
+        return events;
+    }
+
+    /**
+     * 如果没有连接，返回true，否则为false
+     * Returns true if no connections are current stored, false otherwise.
+     */
+    public boolean isEmptyConnections() {
+        return preferences_.getString(CONNECTIONS_PREFERENCE, "").length() == 0;
+    }
+
+    /**
+     * 添加连接到本地存储。
+     * Adds a connection to the local store.
+     * @param str the connection to be added, ignored if null or empty
+     */
+    public synchronized void addConnection(final String str) {
+        if (str != null && str.length() > 0) {
+            final List<String> connections = new ArrayList<>(Arrays.asList(connections()));
+            connections.add(str);
+            preferences_.edit().putString(CONNECTIONS_PREFERENCE, join(connections, DELIMITER)).commit();
+        }
+    }
+
+    /**
+     * 从本地储存中移除一个连接
+     * Removes a connection from the local store.
+     * @param str the connection to be removed, ignored if null or empty,
+     *            or if a matching connection cannot be found
+     */
+    public synchronized void removeConnection(final String str) {
+        if (str != null && str.length() > 0) {
+            final List<String> connections = new ArrayList<>(Arrays.asList(connections()));
+            if (connections.remove(str)) {
+                preferences_.edit().putString(CONNECTIONS_PREFERENCE, join(connections, DELIMITER)).commit();
+            }
+        }
+    }
+
+    /**
+     * 添加自定义事件到本地存储
+     * Adds a custom event to the local store.
+     * @param event event to be added to the local store, must not be null
+     */
+    void addEvent(final Event event) {
+        final List<Event> events = eventsList();
+        events.add(event);
+        preferences_.edit().putString(EVENTS_PREFERENCE, joinEvents(events, DELIMITER)).commit();
+    }
+    /**
+     * 设置view开始时间
+     * @param viewName view名称
+     * @param startTime view开始时间
+     */
+    void setViewStart(String viewName, int startTime) {
+    	preferences_.edit().putInt(VIEW_START_PREFERENCE + viewName, startTime).commit();
+    }
+    /**
+     * 获取view开始时间 
+     * @param viewName view名称
+     * @return
+     */
+    int getViewStart(String viewName) {
+		int startTime = preferences_.getInt(VIEW_START_PREFERENCE + viewName, -1);
+    	return startTime;
+    }
+    /**
+     * 设置session开始时间
+     *
+     */
+    void setBeginSession(long sessionDurationStartTime) {
+    		preferences_.edit().putString(SESSION_PREFERENCE, sessionDurationStartTime + "").commit();
+    }
+    /**
+     * 获取session开始时间
+     * @return
+     */
+    String getBeginSession() {
+    	String beginSession = preferences_.getString(SESSION_PREFERENCE, "");
+    	return beginSession;
+    }
+    /**
+     * 清除session开始时间
+     */
+    void clearBeginSession() {
+    	preferences_.edit().remove(SESSION_PREFERENCE).commit();
+    }
+
+    /**
+     * 设置位置信息，并在下一次请求时发送
+     * Sets location of user and sends it with next request
+     */
+    void setLocation(final double lat, final double lon) {
+        preferences_.edit().putString(LOCATION_PREFERENCE, lat + "," + lon).commit();
+    }
+
+    /**
+     * 获取位置信息
+     * Get location or empty string in case if no location is specified
+     */
+    String getAndRemoveLocation() {
+        String location = preferences_.getString(LOCATION_PREFERENCE, "");
+        if (!location.equals("")) {
+            preferences_.edit().remove(LOCATION_PREFERENCE).commit();
+        }
+        return location;
+    }
+
+    /**
+     * 添加自定义事件到本地存储
+     * Adds a custom event to the local store.
+     * @param key name of the custom event, required, must not be the empty string
+     * @param segmentation segmentation values for the custom event, may be null
+     * @param timestamp timestamp (seconds since 1970) in GMT when the event occurred
+     * @param hour current local hour on device
+     * @param dow current day of the week on device
+     * @param count count associated with the custom event, should be more than zero
+     * @param sum sum associated with the custom event, if not used, pass zero.
+     *            NaN and infinity values will be quietly ignored.
+     */
+    public synchronized void addEvent(final String key, final Map<String, String> segmentation, final int timestamp, final int hour, final int dow, final int count, final double sum) {
+        final Event event = new Event();
+        event.key = key;
+        event.segmentation = segmentation;
+        event.timestamp = timestamp;
+        event.hour = hour;
+        event.dow = dow;
+        event.count = count;
+        event.sum = sum;
+
+        addEvent(event);
+    }
+
+    /**
+     * 从本地储存移除指定的自定义事件。
+     * Removes the specified events from the local store. Does nothing if the event collection
+     * is null or empty.
+     * @param eventsToRemove collection containing the events to remove from the local store
+     */
+    public synchronized void removeEvents(final Collection<Event> eventsToRemove) {
+        if (eventsToRemove != null && eventsToRemove.size() > 0) {
+            final List<Event> events = eventsList();
+            if (events.removeAll(eventsToRemove)) {
+                preferences_.edit().putString(EVENTS_PREFERENCE, joinEvents(events, DELIMITER)).commit();
+            }
+        }
+    }
+
+    /**
+     * 转换事件对象的集合，以URL编码为JSON字符串，由指定的分隔符分隔每个事件JSON字符串。
+     * Converts a collection of Event objects to URL-encoded JSON to a string, with each
+     * event JSON string delimited by the specified delimiter.
+     * @param collection events to join into a delimited string
+     * @param delimiter delimiter to use, should not be something that can be found in URL-encoded JSON string
+     */
+    static String joinEvents(final Collection<Event> collection, final String delimiter) {
+        final List<String> strings = new ArrayList<>();
+        for (Event e : collection) {
+            strings.add(e.toJSON().toString());
+        }
+        return join(strings, delimiter);
+    }
+
+    /**
+     * 合并字符串
+     * Joins all the strings in the specified collection into a single string with the specified delimiter.
+     */
+    static String join(final Collection<String> collection, final String delimiter) {
+        final StringBuilder builder = new StringBuilder();
+
+        int i = 0;
+        for (String s : collection) {
+            builder.append(s);
+            if (++i < collection.size()) {
+                builder.append(delimiter);
+            }
+        }
+
+        return builder.toString();
+    }
+
+    /**
+     * 在本地储存中获取key的值
+     * Retrieves a preference from local store.
+     * @param key the preference key
+     */
+    public synchronized String getPreference(final String key) {
+        return preferences_.getString(key, null);
+    }
+
+    /**
+     * 添加一个本地储存
+     * Adds a preference to local store.
+     * @param key the preference key
+     * @param value the preference value, supply null value to remove preference
+     */
+    public synchronized void setPreference(final String key, final String value) {
+        if (value == null) {
+            preferences_.edit().remove(key).commit();
+        } else {
+            preferences_.edit().putString(key, value).commit();
+        }
+    }
+
+    // for unit testing
+    synchronized void clear() {
+        final SharedPreferences.Editor prefsEditor = preferences_.edit();
+        prefsEditor.remove(EVENTS_PREFERENCE);
+        prefsEditor.remove(CONNECTIONS_PREFERENCE);
+        prefsEditor.commit();
+    }
+}
